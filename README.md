@@ -34,8 +34,7 @@ This notebook contains an earlier attempt at building the pipeline.
   - Prototyping ConvLSTM training
   - Debugging normalization and alignment issues
 
-### Differences from final version:
-  
+  Differences from final version:
   - Less modular structure
   - Limited support for multiple targets
   - No unified evaluation pipeline
