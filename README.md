@@ -28,6 +28,20 @@ The pipeline includes:
   + Did the predicted trajectory move through the actual heatwave region? - GIF
  
 - **model-coefficients.ipynb**
+This notebook contains an earlier attempt at building the pipeline.
+  - Initial exploration of data and model setup
+  - Testing different preprocessing strategies
+  - Prototyping ConvLSTM training
+  - Debugging normalization and alignment issues
+
+### Differences from final version:
+  
+  - Less modular structure
+  - Limited support for multiple targets
+  - No unified evaluation pipeline
+  - Incomplete handling of regression targets (e.g., scaling issues with ID/OD)
+
+This notebook is kept for reference to document the development process and design decisions.
   
 - **run-model-pipeline.ipynb**
 This notebook contains the full end-to-end pipeline used for experiments.
