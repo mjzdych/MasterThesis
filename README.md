@@ -75,5 +75,6 @@ This notebook contains the full end-to-end pipeline used for experiments.
   - Error maps
   - Spatial comparison of `is_heatwave` and network coefficients
   
-- **bc_vs_hw.ipynb** (compare Betweenness Coefficients vs is_heatwave to see if BC is a relevant predictor)
+- **bc_vs_hw.ipynb**
+  + compare Betweenness Coefficients vs is_heatwave to see if BC is a relevant predictor
   
