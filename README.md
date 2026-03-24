@@ -18,5 +18,5 @@ Focus on exploring the Complex Network (CN) coefficients based on the dataset fr
   + Did the predicted trajectory move through the actual heatwave region? - GIF
 - model-coefficients.ipynb
 - run-model-pipeline.ipynb
-- bc_vs_hw.ipynb
+- bc_vs_hw.ipynb (compare Betweenness Coefficients vs is_heatwave to see if BC is a relevant predictor)
   
