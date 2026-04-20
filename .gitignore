@@ -1,2 +1,6 @@
 /era5_data
-/git_frames
+/gif_frames
+merged_clean_cn*.nc
+/Snellius
+era5_cn_merged.nc
+heatwave_daily_true_vs_pred.gif
