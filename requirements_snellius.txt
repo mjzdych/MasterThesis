@@ -10,6 +10,7 @@ scipy
 scikit-learn
 torch
 tqdm
+umap-learn
 cartopy
 shapely
 pyproj

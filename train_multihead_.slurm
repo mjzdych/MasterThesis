@@ -14,4 +14,4 @@ source ~/venvs/thesis/bin/activate
 
 cd /gpfs/home2/mzdych/thesis
 
-python train_threehead_convlstm_param.py
+python train_onehead_convlstm.py
