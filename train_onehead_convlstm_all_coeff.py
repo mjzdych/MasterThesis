@@ -27,7 +27,7 @@ DATA_FILE = "/gpfs/home2/mzdych/thesis/full_processed_training_dataset.nc"
 
 # ── Task switch ───────────────────────────────────────────────────────────
 # Set TASK to one of: "CC" | "BC" | "DC" | "OD" | "ID" | "ND" | "HW" | "CLASS"
-TASK = "CC"
+TASK = "HW"
 
 if TASK == "CC":
     COEFFS    = ["BC", "DC", "ID", "OD", "is_heatwave",
@@ -70,6 +70,7 @@ elif TASK == "ND":
 elif TASK == "HW":
     COEFFS    = ["BC", "DC", "ID", "OD", "CC",
                  "swvl1", "land_mask", "u", "v", "z"]
+    # COEFFS = ["swvl1", "land_mask", "u", "v", "z"]
     TARGET    = "is_heatwave"
     TASK_TYPE = "binary_spatial"
 
@@ -82,7 +83,7 @@ elif TASK == "CLASS":
 else:
     raise ValueError(f"Unknown TASK: {TASK}.")
 
-OUT_DIR = f"/gpfs/home2/mzdych/thesis/single_head_{TASK.lower()}_eu_scandi_2018_output"
+OUT_DIR = f"/gpfs/home2/mzdych/thesis/single_head_{TASK.lower()}_ee_2010_diff_dates"
 os.makedirs(OUT_DIR, exist_ok=True)
 
 # ============================
@@ -96,15 +97,15 @@ os.makedirs(OUT_DIR, exist_ok=True)
 #   set CONTEXT to full Europe, TARGET to the small region
 #
 # ── Option A: Eastern Europe 2010 ────────────────────────────────────────
-CONTEXT_LAT_MIN, CONTEXT_LAT_MAX =  35,  71   # full Europe input
-CONTEXT_LON_MIN, CONTEXT_LON_MAX = -25,  45
+CONTEXT_LAT_MIN, CONTEXT_LAT_MAX =  45,  60   
+CONTEXT_LON_MIN, CONTEXT_LON_MAX = 20,  50
 
-# TARGET_LAT_MIN,  TARGET_LAT_MAX  =  45,  60   # Eastern Europe output
-# TARGET_LON_MIN,  TARGET_LON_MAX  =  20,  50
+TARGET_LAT_MIN,  TARGET_LAT_MAX  =  45,  60   # Eastern Europe output
+TARGET_LON_MIN,  TARGET_LON_MAX  =  20,  50
 
-# TRAIN_START = "1990-06-01";  TRAIN_END = "2009-08-31"
-# VAL_START   = "2010-06-01";  VAL_END   = "2010-07-14"
-# TEST_START  = "2010-07-15";  TEST_END  = "2010-08-31"
+TRAIN_START = "1990-06-01";  TRAIN_END = "2009-08-31"
+VAL_START   = "2010-06-01";  VAL_END   = "2010-06-30"
+TEST_START  = "2010-07-01";  TEST_END  = "2010-08-31"
 
 # ── Baseline (small region only — disable Option A) ───────────────────────
 # Set CONTEXT = TARGET to run without the large context field
@@ -123,23 +124,23 @@ CONTEXT_LON_MIN, CONTEXT_LON_MAX = -25,  45
 # TEST_START  = "2003-07-27";  TEST_END  = "2003-08-31"
 
 # ── Option A: Scandinavia 2018 ────────────────────────────────────────────
-# CONTEXT_LAT_MIN, CONTEXT_LAT_MAX =  35,  71
-# CONTEXT_LON_MIN, CONTEXT_LON_MAX = -25,  45
-TARGET_LAT_MIN,  TARGET_LAT_MAX  =  55,  65
-TARGET_LON_MIN,  TARGET_LON_MAX  =   5,  30
-TRAIN_START = "1990-06-01";  TRAIN_END = "2017-08-31"
-VAL_START   = "2018-06-01";  VAL_END   = "2018-07-14"
-TEST_START  = "2018-07-15";  TEST_END  = "2018-08-31"
+# CONTEXT_LAT_MIN, CONTEXT_LAT_MAX =  55, 65
+# CONTEXT_LON_MIN, CONTEXT_LON_MAX = 5, 30
+# TARGET_LAT_MIN,  TARGET_LAT_MAX  =  55, 65
+# TARGET_LON_MIN,  TARGET_LON_MAX  =   5, 30
+# TRAIN_START = "1990-06-01";  TRAIN_END = "2017-08-31"
+# VAL_START   = "2018-06-01";  VAL_END   = "2018-07-14"
+# TEST_START  = "2018-07-15";  TEST_END  = "2018-08-31"
 
 # ── Training hyperparameters ──────────────────────────────────────────────
 SEQ_LEN       = 14
 BATCH_SIZE    = 4
-HIDDEN_DIM    = 64
+HIDDEN_DIM    = 128
 N_EPOCHS      = 100
 LR            = 5e-4
-WEIGHT_DECAY  = 1e-4
+WEIGHT_DECAY  = 1e-3
 ES_PATIENCE   = 7
-ES_MIN_EPOCHS = 20
+ES_MIN_EPOCHS = 40
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 print("Device:", DEVICE)
@@ -402,12 +403,12 @@ if TASK_TYPE == "regression":
 
 if TASK_TYPE == "binary_spatial":
     hw_pos_frac   = y_tr.mean()
+    # Instead of the automatic formula, cap pos_weight
     hw_pos_weight = torch.tensor(
-        (1.0 - hw_pos_frac) / (hw_pos_frac + 1e-6),
-        dtype=torch.float32, device=DEVICE
+    min((1.0 - hw_pos_frac) / (hw_pos_frac + 1e-6), 10.0),  # cap at 10
+    dtype=torch.float32, device=DEVICE
     )
-    print(f"HW pixel pos fraction: {hw_pos_frac:.3f}  "
-          f"BCE pos_weight: {hw_pos_weight:.2f}")
+    print(f"  pos_weight (capped): {hw_pos_weight:.2f}")
 
 elif TASK_TYPE == "binary_scalar":
     valid   = y_tr[y_tr >= 0]
@@ -522,7 +523,10 @@ class SingleHeadConvLSTM(nn.Module):
         self.cell      = ConvLSTMCell(input_dim, hidden_dim, kernel_size)
 
         if task_type == "regression":
-            self.head = nn.Conv2d(hidden_dim, 1, kernel_size=1)
+            self.head = nn.Sequential(
+        nn.Dropout2d(p=0.3),
+        nn.Conv2d(hidden_dim, 1, kernel_size=1)
+    )
 
         elif task_type == "binary_spatial":
             self.head = nn.Sequential(
@@ -783,7 +787,7 @@ def evaluate(loader, split_name):
         print(f"  ROC-AUC:   {roc:.4f}")
         print(f"\n  Threshold sweep:")
         best_f1, best_th = 0.0, 0.5
-        for th in [0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5]:
+        for th in [0.3, 0.4, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8]:
             p_th  = (pred_arr >= th).astype(int)
             f1_th = f1_score(true_arr, p_th, zero_division=0)
             pr_th = precision_score(true_arr, p_th, zero_division=0)

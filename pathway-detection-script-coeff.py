@@ -445,40 +445,61 @@ def summarise_clusters(labels, scalar_feats, cn_feats, events):
 
 # ── Prop / standing assignment ────────────────────────────────────────────────
 
-def assign_prop_standing(labels, scalar_feats):
-    disps           = scalar_feats[:, 0]
-    unique_clusters = [k for k in sorted(set(labels)) if k != -1]
-    binary          = np.full(len(labels), -1, dtype=np.int8)
-    low_disp        = disps <= PROP_DISP_THRESHOLD_KM
-    high_disp       = ~low_disp
+# def assign_prop_standing(labels, scalar_feats):
+#     disps           = scalar_feats[:, 0]
+#     unique_clusters = [k for k in sorted(set(labels)) if k != -1]
+#     binary          = np.full(len(labels), -1, dtype=np.int8)
+#     low_disp        = disps <= PROP_DISP_THRESHOLD_KM
+#     high_disp       = ~low_disp
 
-    cluster_speeds = {}
-    for k in unique_clusters:
-        mask = (labels == k) & high_disp
-        cluster_speeds[k] = scalar_feats[mask, 2].mean() if mask.sum() > 0 else 0.0
+#     cluster_speeds = {}
+#     for k in unique_clusters:
+#         mask = (labels == k) & high_disp
+#         cluster_speeds[k] = scalar_feats[mask, 2].mean() if mask.sum() > 0 else 0.0
 
-    threshold = np.median(list(cluster_speeds.values())) if cluster_speeds else 0.0
-    cluster_to_binary = {k: (1 if cluster_speeds.get(k, 0) > threshold else 0)
-                         for k in unique_clusters}
-    cluster_to_binary[-1] = -1
+#     threshold = np.median(list(cluster_speeds.values())) if cluster_speeds else 0.0
+#     cluster_to_binary = {k: (1 if cluster_speeds.get(k, 0) > threshold else 0)
+#                          for k in unique_clusters}
+#     cluster_to_binary[-1] = -1
 
-    for i, (lab, is_low) in enumerate(zip(labels, low_disp)):
+#     for i, (lab, is_low) in enumerate(zip(labels, low_disp)):
+#         if lab == -1:
+#             binary[i] = -1
+#         elif is_low:
+#             binary[i] = 0
+#         else:
+#             binary[i] = cluster_to_binary[lab]
+
+#     print(f"\n  Displacement threshold: {PROP_DISP_THRESHOLD_KM} km")
+#     print(f"  Forced standing (low disp): {low_disp.sum()} events")
+#     print(f"  Cluster speeds: "
+#           + "  ".join([f"C{k}={v:.0f}" for k, v in cluster_speeds.items()]))
+#     print(f"  Speed threshold: {threshold:.0f} km/d")
+#     print(f"  Mapping: {cluster_to_binary}")
+
+#     return binary, cluster_to_binary
+def assign_prop_standing_direct(scalar_feats, labels,
+                                 disp_threshold=300,    # km
+                                 step_threshold=150):   # km/day mean step
+    """
+    Standing  : net displacement < disp_threshold  AND  mean step < step_threshold
+    Propagating: net displacement >= disp_threshold OR   mean step >= step_threshold
+    Noise     : HDBSCAN label == -1
+    """
+    disps  = scalar_feats[:, 0]   # net displacement
+    steps  = scalar_feats[:, 1]   # mean daily step
+    
+    binary = np.full(len(labels), -1, dtype=np.int8)
+    
+    for i, lab in enumerate(labels):
         if lab == -1:
             binary[i] = -1
-        elif is_low:
-            binary[i] = 0
+        elif disps[i] < disp_threshold and steps[i] < step_threshold:
+            binary[i] = 0   # standing
         else:
-            binary[i] = cluster_to_binary[lab]
-
-    print(f"\n  Displacement threshold: {PROP_DISP_THRESHOLD_KM} km")
-    print(f"  Forced standing (low disp): {low_disp.sum()} events")
-    print(f"  Cluster speeds: "
-          + "  ".join([f"C{k}={v:.0f}" for k, v in cluster_speeds.items()]))
-    print(f"  Speed threshold: {threshold:.0f} km/d")
-    print(f"  Mapping: {cluster_to_binary}")
-
-    return binary, cluster_to_binary
-
+            binary[i] = 1   # propagating
+    
+    return binary
 
 # ── Sensitivity sweep ─────────────────────────────────────────────────────────
 
