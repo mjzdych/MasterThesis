@@ -13,6 +13,7 @@ Outputs: BASE_OUT/results_{REGION}_{ABLATION}_cconly/
 """
 
 import os
+from matplotlib.lines import Line2D
 import numpy as np
 import pandas as pd
 import matplotlib
@@ -33,11 +34,13 @@ from scipy.ndimage import label as nd_label
 # BASE_OUT  = "/gpfs/home2/mzdych/thesis/experiments"
 # NUTS_FILE = "/gpfs/home2/mzdych/thesis/NUTS_RG_01M_2024_4326_LEVL_2.geojson"
 
+# for running convlstm change the paths of CC_DIR and HW_DIR and BASE_OUT just experiments, plus ALREADY_DENORMALIZED set to False
+
 # Local
 DATA_FILE = "full_processed_training_dataset.nc"
-BASE_OUT  = "experiments"
+BASE_OUT  = "experiments_transformer"
 NUTS_FILE = "NUTS_RG_01M_2024_4326_LEVL_2.geojson"
-
+SEQ_LEN = 14
 
 REGION   = "iberia_2003"
 ABLATION = "cn_era5"
@@ -45,6 +48,14 @@ ABLATION = "cn_era5"
 CC_HIGH_Q          = 0.70
 CC_LOW_Q           = 0.40
 MIN_COMPONENT_SIZE = 50
+
+# ── Figure 8: Predicted vs True CC comparison ────────────────────────────────
+# Set the start date for the 12-consecutive-day comparison panel.
+# Must be a date within the test period (format: "YYYY-MM-DD").
+# Set to None to auto-select (uses the day of peak active fraction).
+COMPARISON_START_DATE = "2003-07-15"   # ← change this to any date in the test period
+N_COMPARISON_DAYS     = 5             # number of consecutive days to show
+# ─────────────────────────────────────────────────────────────────────────────
 
 REGION_BOUNDS = {
     "eastern_europe_2010": {"lat_min": 45, "lat_max": 55, "lon_min": 20,  "lon_max": 40},
@@ -57,9 +68,11 @@ REGION_BOUNDS = {
     "mediterranean_2003":  {"lat_min": 30, "lat_max": 48, "lon_min": -10, "lon_max": 40},
 }
 
-CC_DIR  = os.path.join(BASE_OUT, f"{REGION}_cc_{ABLATION}")
-HW_DIR  = os.path.join(BASE_OUT, f"{REGION}_hw_{ABLATION}")
-OUT_DIR = os.path.join(BASE_OUT, f"results_{REGION}_{ABLATION}_cconly")
+CC_DIR  = os.path.join(BASE_OUT, f"{REGION}_cc_{ABLATION}_transformer") # _transformer
+HW_DIR  = os.path.join(BASE_OUT, f"{REGION}_hw_{ABLATION}_transformer")
+# CC_DIR  = os.path.join(BASE_OUT, f"{REGION}_cc_{ABLATION}") # _transformer
+# HW_DIR  = os.path.join(BASE_OUT, f"{REGION}_hw_{ABLATION}")
+OUT_DIR = os.path.join(BASE_OUT, f"trajectories_{REGION}_{ABLATION}_cconly")
 os.makedirs(OUT_DIR, exist_ok=True)
 
 # ============================================================
@@ -79,17 +92,57 @@ for lbl, d in [("CC", CC_DIR), ("HW", HW_DIR)]:
         if not os.path.exists(p):
             raise FileNotFoundError(f"Missing {lbl} file: {p}")
 
-pred_cc_norm = np.load(os.path.join(CC_DIR, "pred_TEST.npy"))[:, 0]
-true_cc_norm = np.load(os.path.join(CC_DIR, "true_TEST.npy"))[:, 0]
-pred_hw_prob = np.load(os.path.join(HW_DIR, "pred_TEST.npy"))[:, 0]
-true_hw      = np.load(os.path.join(HW_DIR, "true_TEST.npy"))[:, 0].astype(int)
+# pred_cc_norm = np.load(os.path.join(CC_DIR, "pred_TEST.npy"))[:, 0]
+# true_cc_norm = np.load(os.path.join(CC_DIR, "true_TEST.npy"))[:, 0]
+# pred_hw_prob = np.load(os.path.join(HW_DIR, "pred_TEST.npy"))[:, 0]
+# true_hw      = np.load(os.path.join(HW_DIR, "true_TEST.npy"))[:, 0].astype(int)
+
+def load_spatial_npy(path, H=None, W=None):
+    """Load pred/true npy handling both (T,1,H,W) and flat/2D shapes."""
+    arr = np.load(path)
+    if arr.ndim == 4:
+        return arr[:, 0]           # (T,1,H,W) → (T,H,W)  — ConvLSTM format
+    elif arr.ndim == 3:
+        return arr                 # (T,H,W)   already correct
+    elif arr.ndim == 2:
+        return arr                 # (T, H*W)  — unlikely but handle
+    elif arr.ndim == 1:
+        # fully flattened — need H and W to reshape
+        assert H is not None and W is not None, \
+            f"Cannot reshape 1D array without H and W: {path}"
+        T = len(arr) // (H * W)
+        return arr.reshape(T, H, W)
+    else:
+        raise ValueError(f"Unexpected shape {arr.shape} in {path}")
+
+# Load CC (shape known already)
+pred_cc_norm = load_spatial_npy(os.path.join(CC_DIR, "pred_TEST.npy"))
+true_cc_norm = load_spatial_npy(os.path.join(CC_DIR, "true_TEST.npy"))
+
+# Get H, W from CC shape
+H_tmp, W_tmp = pred_cc_norm.shape[1], pred_cc_norm.shape[2]
+
+# Load HW with fallback reshape if flat
+pred_hw_prob = load_spatial_npy(os.path.join(HW_DIR, "pred_TEST.npy"), H_tmp, W_tmp)
+true_hw      = load_spatial_npy(os.path.join(HW_DIR, "true_TEST.npy"), H_tmp, W_tmp).astype(int)
+
 test_times   = np.load(os.path.join(CC_DIR, "times_TEST.npy"), allow_pickle=True)
-test_dates   = pd.DatetimeIndex(test_times)
+test_dates = pd.DatetimeIndex(test_times)[SEQ_LEN:]
 
 y_mean_cc = float(np.load(os.path.join(CC_DIR, "y_mean.npy")))
 y_std_cc  = float(np.load(os.path.join(CC_DIR, "y_std.npy")))
-pred_cc   = np.clip(pred_cc_norm * y_std_cc + y_mean_cc, 0.0, None)
-true_cc   = np.clip(true_cc_norm * y_std_cc + y_mean_cc, 0.0, None)
+# pred_cc   = np.clip(pred_cc_norm * y_std_cc + y_mean_cc, 0.0, None)
+# true_cc   = np.clip(true_cc_norm * y_std_cc + y_mean_cc, 0.0, None)
+
+
+ALREADY_DENORMALIZED = True  # set True for transformer outputs
+
+if ALREADY_DENORMALIZED:
+    pred_cc = np.clip(pred_cc_norm, 0.0, None)
+    true_cc = np.clip(true_cc_norm, 0.0, None)
+else:
+    pred_cc = np.clip(pred_cc_norm * y_std_cc + y_mean_cc, 0.0, None)
+    true_cc = np.clip(true_cc_norm * y_std_cc + y_mean_cc, 0.0, None)
 
 H, W = pred_cc.shape[1], pred_cc.shape[2]
 print(f"  pred_cc shape: {pred_cc.shape}  →  {H} rows × {W} cols")
@@ -200,8 +253,11 @@ print("\nComputing CC thresholds from model predictions (VAL + TEST)...")
 
 val_path = os.path.join(CC_DIR, "pred_VAL.npy")
 if os.path.exists(val_path):
-    pred_val_norm = np.load(val_path)[:, 0]
-    pred_val_cc   = np.clip(pred_val_norm * y_std_cc + y_mean_cc, 0.0, None)
+    pred_val_norm = load_spatial_npy(val_path, H, W)
+    if ALREADY_DENORMALIZED:
+        pred_val_cc = np.clip(pred_val_norm, 0.0, None)
+    else:
+        pred_val_cc = np.clip(pred_val_norm * y_std_cc + y_mean_cc, 0.0, None)
     # Apply the same land mask (spatial grid is identical across splits)
     pred_val_cc[:, ~land_mask] = np.nan
     cc_val_land  = pred_val_cc[:, land_mask].ravel()
@@ -286,12 +342,14 @@ def pixel_to_latlon(row_idx, col_idx):
     return float(LAT2D[row_i, col_i]), float(LON2D[row_i, col_i])
 
 
-centroid_lat = np.full(len(test_dates), np.nan)
-centroid_lon = np.full(len(test_dates), np.nan)
-lcc_size     = np.zeros(len(test_dates))
-n_components = np.zeros(len(test_dates))
+T_map = traj_map.shape[0]
 
-for t in range(len(test_dates)):
+centroid_lat = np.full(T_map, np.nan)
+centroid_lon = np.full(T_map, np.nan)
+lcc_size     = np.zeros(T_map)
+n_components = np.zeros(T_map)
+
+for t in range(T_map):
     act_mask = (traj_map[t] == 1)
     if act_mask.sum() < MIN_COMPONENT_SIZE:
         continue
@@ -308,15 +366,44 @@ for t in range(len(test_dates)):
     lcc_size[t] = sizes[largest - 1]
     centroid_lat[t], centroid_lon[t] = pixel_to_latlon(rows.mean(), cols.mean())
 
+# Map traj indices back to dates for display
+# test_dates covers the full test period; traj predictions start SEQ_LEN days in
+traj_dates = test_dates[:T_map]
+
+# ── Observed centroid (from true_hw LCC) ──────────────────────
+obs_centroid_lat = np.full(T_map, np.nan)
+obs_centroid_lon = np.full(T_map, np.nan)
+
+for t in range(T_map):
+    hw_mask = true_hw[t].astype(bool)
+    hw_mask[~land_mask] = False
+    if hw_mask.sum() < MIN_COMPONENT_SIZE:
+        continue
+    labeled_hw, n_feat_hw = nd_label(hw_mask)
+    if n_feat_hw == 0:
+        continue
+    sizes_hw = np.array([(labeled_hw == i).sum()
+                         for i in range(1, n_feat_hw + 1)])
+    largest_hw = np.argmax(sizes_hw) + 1
+    if sizes_hw[largest_hw - 1] < MIN_COMPONENT_SIZE:
+        continue
+    rows_hw, cols_hw = np.where(labeled_hw == largest_hw)
+    obs_centroid_lat[t], obs_centroid_lon[t] = pixel_to_latlon(
+        rows_hw.mean(), cols_hw.mean()
+    )
+
+print(f"  Predicted centroids valid: {(~np.isnan(centroid_lat)).sum()} / {T_map}")
+print(f"  Observed  centroids valid: {(~np.isnan(obs_centroid_lat)).sum()} / {T_map}")
+
 print("\nLarge centroid jumps (>5° in one day):")
 found_jump = False
-for t in range(1, len(test_dates)):
+for t in range(1, T_map):
     if np.isnan(centroid_lat[t]) or np.isnan(centroid_lat[t-1]):
         continue
     dlat = abs(centroid_lat[t] - centroid_lat[t-1])
     dlon = abs(centroid_lon[t] - centroid_lon[t-1])
     if dlat > 5 or dlon > 5:
-        print(f"  {test_dates[t].date()}: Δlat={dlat:.1f}° Δlon={dlon:.1f}°  "
+        print(f"  {traj_dates[t].date()}: Δlat={dlat:.1f}° Δlon={dlon:.1f}°  "
               f"({centroid_lon[t-1]:.1f}→{centroid_lon[t]:.1f}°)")
         found_jump = True
 if not found_jump:
@@ -326,15 +413,16 @@ if not found_jump:
 # STEP 9 — TEMPORAL TABLE
 # ============================================================
 
-t_axis   = np.arange(len(test_dates))
+T_map  = traj_map.shape[0]  # already set in Step 8, reassigned for clarity
+t_axis = np.arange(T_map)
 act_frac = np.array([(traj_map[t, land_mask] == 1).mean() for t in t_axis])
 tr_frac  = np.array([(traj_map[t, land_mask] == 2).mean() for t in t_axis])
 hw_frac  = np.array([true_hw[t, land_mask].mean()          for t in t_axis])
 
 print(f"\n{'Date':<12} {'Active%':>8} {'HW%':>8} {'LCC_size':>10} "
       f"{'N_comp':>8} {'Lat':>8} {'Lon':>8}")
-for t in range(len(test_dates)):
-    print(f"{str(test_dates[t].date()):<12} "
+for t in range(T_map):
+    print(f"{str(traj_dates[t].date()):<12} "
           f"{act_frac[t]*100:>8.1f} "
           f"{hw_frac[t]*100:>8.1f} "
           f"{lcc_size[t]:>10.0f} {n_components[t]:>8.0f} "
@@ -391,7 +479,8 @@ print(f"\nSaved: {path}")
 # FIGURE 1 — TRAJECTORY SEQUENCE
 # ============================================================
 
-plot_days = list(range(0, len(test_dates), max(1, len(test_dates) // 12)))[:12]
+T_map     = traj_map.shape[0]
+plot_days = list(range(0, T_map, max(1, T_map // 12)))[:12]
 ncols = 4
 nrows = -(-len(plot_days) // ncols)
 
@@ -410,7 +499,7 @@ for i, t in enumerate(plot_days):
         ax.plot(centroid_lon[t], centroid_lat[t], "w*", markersize=12,
                 markeredgecolor="black", markeredgewidth=0.8, zorder=5)
     setup_geo_ax(ax)
-    ax.set_title(str(test_dates[t].date()), fontsize=8)
+    ax.set_title(str(traj_dates[t].date()), fontsize=8)
     if i % ncols == 0:
         ax.set_yticks(np.linspace(LAT_MIN_REAL, LAT_MAX_REAL, 3))
         ax.set_yticklabels(
@@ -463,7 +552,7 @@ ax1.set_xlabel("Test day"); ax1.set_ylabel("Fraction of land pixels")
 ax2.set_ylabel("HW land pixel fraction")
 step = max(1, len(t_axis) // 10)
 ax1.set_xticks(t_axis[::step])
-ax1.set_xticklabels([str(test_dates[t].date()) for t in t_axis[::step]],
+ax1.set_xticklabels([str(traj_dates[t].date()) for t in t_axis[::step]],
                     rotation=45, ha="right", fontsize=7)
 l1, lb1 = ax1.get_legend_handles_labels()
 l2, lb2 = ax2.get_legend_handles_labels()
@@ -475,50 +564,82 @@ plt.savefig(path, dpi=150); plt.close()
 print(f"Saved: {path}")
 
 # ============================================================
-# FIGURE 3 — CENTROID TRAJECTORY MAP
+# FIGURE 3 — PREDICTED vs OBSERVED LCC CENTROID COMPARISON
 # ============================================================
+# Single panel: predicted centroids (circles) vs observed centroids
+# (squares), both colour-coded by test day index so the temporal
+# progression and spatial agreement are immediately readable.
 
-fig, axes = plt.subplots(1, 2, figsize=(15, 5))
+fig, ax = plt.subplots(figsize=(8, 7))
 
-ax = axes[0]
-plot_cc = np.where(land_mask, pred_cc.mean(axis=0), np.nan)
-pc = ax.pcolormesh(LON2D, LAT2D, plot_cc, cmap="YlOrRd", shading="nearest", zorder=1)
-plt.colorbar(pc, ax=ax, fraction=0.046, label="Mean predicted CC")
-nuts.boundary.plot(ax=ax, linewidth=0.5, color="black", alpha=0.7, zorder=3)
-valid = ~np.isnan(centroid_lat)
-if valid.sum() > 1:
-    ax.plot(centroid_lon[valid], centroid_lat[valid],
-            color="white", linewidth=1.5, alpha=0.7, zorder=4)
-    sc = ax.scatter(centroid_lon[valid], centroid_lat[valid],
-                    c=t_axis[valid], cmap="cool", s=35, zorder=5,
-                    edgecolors="black", linewidths=0.4)
-    plt.colorbar(sc, ax=ax, fraction=0.046, label="Test day index")
-    ax.plot(centroid_lon[valid][0],  centroid_lat[valid][0],
-            "g^", markersize=10, zorder=6, label="Start")
-    ax.plot(centroid_lon[valid][-1], centroid_lat[valid][-1],
-            "rs", markersize=10, zorder=6, label="End")
-    ax.legend(fontsize=8, loc="upper left")
-setup_geo_ax(ax); geo_ticks(ax)
-ax.set_title("Mean predicted CC\nwith LCC centroid trajectory", fontsize=9)
+# Light land background
+bg = np.where(land_mask, 0.5, np.nan)
+ax.pcolormesh(LON2D, LAT2D, bg,
+              cmap="Greys", vmin=0, vmax=1,
+              shading="nearest", alpha=0.18, zorder=1)
+nuts.boundary.plot(ax=ax, linewidth=0.5,
+                   color="black", alpha=0.55, zorder=2)
 
-ax2 = axes[1]
-plot_true = np.where(land_mask, true_cc.mean(axis=0), np.nan)
-pc2 = ax2.pcolormesh(LON2D, LAT2D, plot_true, cmap="YlOrRd", shading="nearest", zorder=1)
-plt.colorbar(pc2, ax=ax2, fraction=0.046, label="Mean observed CC")
-nuts.boundary.plot(ax=ax2, linewidth=0.5, color="black", alpha=0.7, zorder=3)
-hw_mean = true_hw.mean(axis=0)
-if hw_mean.max() > 0.1:
-    ax2.contourf(LON2D, LAT2D, hw_mean, levels=[0.1, 1.0],
-                 colors=["navy"], alpha=0.2, zorder=2)
-    ax2.contour(LON2D, LAT2D, hw_mean, levels=[0.1],
-                colors=["navy"], linewidths=1.0, zorder=3)
-setup_geo_ax(ax2); geo_ticks(ax2)
-ax2.set_title("Mean observed CC\nwith HW frequency overlay (>10% of days)", fontsize=9)
+cmap_track = plt.cm.plasma
+norm_track  = mcolors.Normalize(vmin=0, vmax=T_map)
 
-fig.suptitle(f"Climatological CC maps — {rtitle}", fontsize=12)
+valid_pred = ~np.isnan(centroid_lat)
+valid_obs  = ~np.isnan(obs_centroid_lat)
+
+# Predicted track
+if valid_pred.sum() > 1:
+    ax.plot(centroid_lon[valid_pred], centroid_lat[valid_pred],
+            color="#d73027", linewidth=1.2, alpha=0.55, zorder=3)
+    sc_pred = ax.scatter(
+        centroid_lon[valid_pred], centroid_lat[valid_pred],
+        c=t_axis[valid_pred], cmap=cmap_track, norm=norm_track,
+        s=70, zorder=5, edgecolors="#d73027",
+        linewidths=1.4, marker="o", label="Predicted centroid"
+    )
+    # Start / end markers
+    ax.plot(centroid_lon[valid_pred][0], centroid_lat[valid_pred][0],
+            "g^", markersize=11, zorder=7, label="Pred. start")
+    ax.plot(centroid_lon[valid_pred][-1], centroid_lat[valid_pred][-1],
+            "rs", markersize=11, zorder=7, label="Pred. end")
+
+# Observed track
+if valid_obs.sum() > 1:
+    ax.plot(obs_centroid_lon[valid_obs], obs_centroid_lat[valid_obs],
+            color="#2166ac", linewidth=1.2, alpha=0.55, zorder=3)
+    sc_obs = ax.scatter(
+        obs_centroid_lon[valid_obs], obs_centroid_lat[valid_obs],
+        c=t_axis[valid_obs], cmap=cmap_track, norm=norm_track,
+        s=70, zorder=4, edgecolors="#2166ac",
+        linewidths=1.4, marker="s", label="Observed centroid"
+    )
+
+# Shared colorbar (use pred scatter as reference)
+ref_sc = sc_pred if valid_pred.sum() > 1 else sc_obs
+cb = plt.colorbar(ref_sc, ax=ax, fraction=0.035, pad=0.02)
+cb.set_label("Test day index", fontsize=8)
+# Annotate colorbar with actual dates at tick positions
+tick_vals = cb.get_ticks()
+tick_vals = [v for v in tick_vals if 0 <= v < T_map]
+cb.set_ticks(tick_vals)
+cb.set_ticklabels(
+    [str(traj_dates[int(v)].date()) if int(v) < T_map else ""
+     for v in tick_vals],
+    fontsize=7
+)
+
+setup_geo_ax(ax)
+geo_ticks(ax)
+ax.legend(loc="upper left", fontsize=8, framealpha=0.92)
+ax.set_title(
+    f"Predicted vs Observed LCC centroid — {rtitle}\n"
+    f"Circles = predicted · Squares = observed · "
+    f"Colour = temporal progression",
+    fontsize=9
+)
 plt.tight_layout()
-path = os.path.join(OUT_DIR, "fig3_centroid_trajectory.png")
-plt.savefig(path, dpi=150); plt.close()
+path = os.path.join(OUT_DIR, "fig3_centroid_comparison.png")
+plt.savefig(path, dpi=150, bbox_inches="tight")
+plt.close()
 print(f"Saved: {path}")
 
 # ============================================================
@@ -559,7 +680,7 @@ ax1.set_ylabel("Largest connected component (pixels)")
 ax2.set_ylabel("HW land pixel fraction")
 step = max(1, len(t_axis) // 10)
 ax1.set_xticks(t_axis[::step])
-ax1.set_xticklabels([str(test_dates[t].date()) for t in t_axis[::step]],
+ax1.set_xticklabels([str(traj_dates[t].date()) for t in t_axis[::step]],
                     rotation=45, ha="right", fontsize=7)
 l1, lb1 = ax1.get_legend_handles_labels()
 l2, lb2 = ax2.get_legend_handles_labels()
@@ -637,6 +758,402 @@ plt.savefig(path, dpi=150); plt.close()
 print(f"Saved: {path}")
 
 # ============================================================
+# FIGURE 7 — PREDICTED CC vs OBSERVED CC (key days)
+# ============================================================
+
+lcc_series = lcc_size[:T_map]
+onset_t = next((t for t in range(T_map) if lcc_size[t] > MIN_COMPONENT_SIZE), 0)
+peak_t  = int(np.argmax(lcc_series))
+
+# Decay: first day after peak where active fraction drops below 50% of peak value
+peak_act = act_frac[peak_t]
+decay_t  = peak_t
+for t in range(peak_t + 1, T_map):
+    if act_frac[t] < peak_act * 0.5:
+        decay_t = t
+        break
+# If no clear decay found, use last day with any active pixels
+if decay_t == peak_t:
+    for t in range(T_map - 1, peak_t, -1):
+        if lcc_size[t] > 0:
+            decay_t = t
+            break
+
+key_days   = [onset_t, peak_t, decay_t]
+day_labels = ["Onset", "Peak", "Decay"]
+
+# Shared colormap and scale for CC
+vmin_cc = 0.0
+vmax_cc = float(np.nanpercentile(
+    np.concatenate([pred_cc[key_days].ravel(),
+                    true_cc[key_days].ravel()]), 98))
+cmap_cc = "YlOrRd"
+
+fig, axes = plt.subplots(2, 3, figsize=(15, 8))
+
+for col, (t, label) in enumerate(zip(key_days, day_labels)):
+
+    pred_day = np.where(land_mask, pred_cc[t], np.nan)
+    true_day = np.where(land_mask, true_cc[t], np.nan)
+    active_contour = (traj_map[t] == 1).astype(float)
+
+    for row, (data, row_label) in enumerate(
+            [(pred_day, "Predicted CC"), (true_day, "Observed CC")]):
+
+        ax = axes[row, col]
+        pc = ax.pcolormesh(LON2D, LAT2D, data,
+                           cmap=cmap_cc, vmin=vmin_cc, vmax=vmax_cc,
+                           shading="nearest", zorder=1)
+
+        # Active CC contour on both rows
+        if active_contour.sum() > 0:
+            ax.contour(LON2D, LAT2D, active_contour,
+                       levels=[0.5], colors="#2166ac",
+                       linewidths=1.5, zorder=3)
+
+        nuts.boundary.plot(ax=ax, linewidth=0.4,
+                           color="black", alpha=0.6, zorder=4)
+
+        if row == 0 and not np.isnan(centroid_lat[t]):
+            ax.plot(centroid_lon[t], centroid_lat[t], "w*",
+                    markersize=14, markeredgecolor="black",
+                    markeredgewidth=0.8, zorder=5)
+
+        setup_geo_ax(ax)
+        geo_ticks(ax, fontsize=6)
+
+        if row == 0:
+            ax.set_title(f"{label}  —  {traj_dates[t].date()}\n{row_label}",
+                         fontsize=9)
+        else:
+            ax.set_title(row_label, fontsize=9)
+
+        if col == 2:
+            plt.colorbar(pc, ax=ax, fraction=0.046,
+                         label="CC value", pad=0.02)
+
+        if col == 0:
+            ax.set_ylabel(row_label, fontsize=10, fontweight="bold")
+
+# Shared legend
+from matplotlib.lines import Line2D
+legend_elements = [
+    Line2D([0],[0], color="#2166ac", linewidth=1.5,
+           label="Predicted active CC boundary (q70 threshold)"),
+    plt.Line2D([0],[0], marker="*", color="w",
+               markerfacecolor="white", markeredgecolor="black",
+               markersize=10, label="LCC centroid", linestyle="None"),
+]
+fig.legend(handles=legend_elements, loc="lower center",
+           ncol=2, fontsize=9, bbox_to_anchor=(0.5, 0.0))
+
+fig.suptitle(
+    f"Predicted vs Observed CC — {rtitle}\n"
+    f"Blue contour = predicted active region (CC ≥ q70) · ★ = LCC centroid",
+    fontsize=11)
+plt.tight_layout(rect=[0, 0.06, 1, 1])
+path = os.path.join(OUT_DIR, "fig7_pred_vs_obs_cc.png")
+plt.savefig(path, dpi=150, bbox_inches="tight")
+plt.close()
+print(f"Saved: {path}")
+
+
+# ============================================================
+# STEP 7b — PERSISTENCE BASELINE
+# ============================================================
+# "Tomorrow's heatwave looks like today's heatwave" — Jaccard between
+# true_hw[t] and true_hw[t+lead], land pixels only. This is the trivial
+# baseline that the model's active-CC Jaccard (Step 7) should beat.
+ 
+print(f"\n{'Lead':>6}  {'Persistence Jaccard':>20}  {'Active CC Jaccard':>18}  "
+      f"{'Delta':>8}  {'N':>5}")
+jaccard_persistence = {}
+ 
+for lead in [1, 2, 3]:
+    T = traj_map.shape[0]
+    j_pers = []
+    for t in range(T - lead):
+        hw_today    = true_hw[t].astype(bool)
+        hw_tomorrow = true_hw[t + lead].astype(bool)
+        hw_today[~land_mask]    = False
+        hw_tomorrow[~land_mask] = False
+        if hw_tomorrow.sum() == 0:
+            continue
+        intersection = (hw_today & hw_tomorrow).sum()
+        union        = (hw_today | hw_tomorrow).sum()
+        j_pers.append(intersection / (union + 1e-8))
+    jaccard_persistence[lead] = j_pers
+    mp = np.mean(j_pers) if j_pers else 0.0
+    ma = np.mean(jaccard_active[lead]) if jaccard_active[lead] else 0.0
+    print(f"  {lead:>4}d  {mp:>20.4f}  {ma:>18.4f}  {ma-mp:>+8.4f}  {len(j_pers):>5}")
+ 
+print("\nInterpretation: if 'Delta' > 0, the active-CC region predicts")
+print("future HW location better than simply persisting today's HW mask.")
+
+ 
+# ============================================================
+# STEP 7c — DAILY DISCRIMINATION CHECK
+# ============================================================
+# Per-day spatial correlation between predicted and true CC.
+# Tests whether the model tracks day-to-day evolution (varying,
+# mostly-positive correlation that is higher on "active" days)
+# rather than reproducing a fixed climatological pattern every day
+# (which would give flat/low correlation regardless of the day's
+# true activity).
+ 
+print("\nComputing per-day spatial correlation (pred vs true CC)...")
+ 
+daily_corr        = np.full(T_map, np.nan)
+daily_active_frac = np.full(T_map, np.nan)
+ 
+for t in range(T_map):
+    p  = pred_cc[t][land_mask].ravel()
+    tr = true_cc[t][land_mask].ravel()
+    valid = ~(np.isnan(p) | np.isnan(tr))
+    p, tr = p[valid], tr[valid]
+ 
+    daily_active_frac[t] = (tr > 0.5).mean()
+    if tr.std() > 0 and p.std() > 0:
+        daily_corr[t] = np.corrcoef(p, tr)[0, 1]
+ 
+valid_days = ~np.isnan(daily_corr)
+print(f"  Days with defined correlation: {valid_days.sum()} / {T_map}")
+print(f"  Mean daily correlation (all valid days)   : {np.nanmean(daily_corr):.3f}")
+ 
+active_days = valid_days & (daily_active_frac > 0.01)
+quiet_days  = valid_days & (daily_active_frac <= 0.01)
+if active_days.sum() > 0:
+    print(f"  Mean daily correlation (active days, n={active_days.sum():>3}) "
+          f": {np.nanmean(daily_corr[active_days]):.3f}")
+if quiet_days.sum() > 0:
+    print(f"  Mean daily correlation (quiet days,  n={quiet_days.sum():>3}) "
+          f": {np.nanmean(daily_corr[quiet_days]):.3f}")
+ 
+# Figure: daily correlation + active fraction over time
+fig, ax1 = plt.subplots(figsize=(12, 4))
+ax2 = ax1.twinx()
+ 
+ax1.plot(t_axis, daily_corr, color="#2166ac", marker="o", markersize=3,
+         linewidth=1.2, label="Daily spatial corr. (pred vs true CC)")
+ax1.axhline(0, color="grey", linewidth=0.8, linestyle="--")
+ax1.set_ylabel("Pearson correlation (pred vs true, per day)", color="#2166ac")
+ax1.set_ylim(-1, 1)
+ax1.tick_params(axis="y", labelcolor="#2166ac")
+ 
+ax2.fill_between(t_axis, daily_active_frac, alpha=0.25, color="#d73027",
+                 label="True active fraction (CC > 0.5)")
+ax2.set_ylabel("Fraction of land pixels with true CC > 0.5", color="#d73027")
+ax2.tick_params(axis="y", labelcolor="#d73027")
+ 
+step = max(1, len(t_axis) // 10)
+ax1.set_xticks(t_axis[::step])
+ax1.set_xticklabels([str(traj_dates[t].date()) for t in t_axis[::step]],
+                    rotation=45, ha="right", fontsize=7)
+ 
+l1, lb1 = ax1.get_legend_handles_labels()
+l2, lb2 = ax2.get_legend_handles_labels()
+ax1.legend(l1+l2, lb1+lb2, loc="upper left", fontsize=8)
+ax1.set_title(
+    f"Daily discrimination check — {rtitle}\n"
+    f"Does the model track day-to-day CC evolution, or just a fixed pattern?",
+    fontsize=10
+)
+plt.tight_layout()
+path = os.path.join(OUT_DIR, "fig_daily_discrimination.png")
+plt.savefig(path, dpi=150, bbox_inches="tight")
+plt.close()
+print(f"Saved: {path}")
+ 
+
+# STEP 7c — DAILY DISCRIMINATION CHECK
+# ============================================================
+# Per-day spatial correlation between predicted and true CC.
+# Tests whether the model tracks day-to-day evolution (varying,
+# mostly-positive correlation that is higher on "active" days)
+# rather than reproducing a fixed climatological pattern every day
+# (which would give flat/low correlation regardless of the day's
+# true activity).
+ 
+print("\nComputing per-day spatial correlation (pred vs true CC)...")
+ 
+daily_corr        = np.full(T_map, np.nan)
+daily_active_frac = np.full(T_map, np.nan)
+ 
+for t in range(T_map):
+    p  = pred_cc[t][land_mask].ravel()
+    tr = true_cc[t][land_mask].ravel()
+    valid = ~(np.isnan(p) | np.isnan(tr))
+    p, tr = p[valid], tr[valid]
+ 
+    daily_active_frac[t] = (tr > 0.5).mean()
+    if tr.std() > 0 and p.std() > 0:
+        daily_corr[t] = np.corrcoef(p, tr)[0, 1]
+ 
+valid_days = ~np.isnan(daily_corr)
+print(f"  Days with defined correlation: {valid_days.sum()} / {T_map}")
+print(f"  Mean daily correlation (all valid days)   : {np.nanmean(daily_corr):.3f}")
+ 
+active_days = valid_days & (daily_active_frac > 0.01)
+quiet_days  = valid_days & (daily_active_frac <= 0.01)
+if active_days.sum() > 0:
+    print(f"  Mean daily correlation (active days, n={active_days.sum():>3}) "
+          f": {np.nanmean(daily_corr[active_days]):.3f}")
+if quiet_days.sum() > 0:
+    print(f"  Mean daily correlation (quiet days,  n={quiet_days.sum():>3}) "
+          f": {np.nanmean(daily_corr[quiet_days]):.3f}")
+ 
+# Figure: daily correlation + active fraction over time
+fig, ax1 = plt.subplots(figsize=(12, 4))
+ax2 = ax1.twinx()
+ 
+ax1.plot(t_axis, daily_corr, color="#2166ac", marker="o", markersize=3,
+         linewidth=1.2, label="Daily spatial corr. (pred vs true CC)")
+ax1.axhline(0, color="grey", linewidth=0.8, linestyle="--")
+ax1.set_ylabel("Pearson correlation (pred vs true, per day)", color="#2166ac")
+ax1.set_ylim(-1, 1)
+ax1.tick_params(axis="y", labelcolor="#2166ac")
+ 
+ax2.fill_between(t_axis, daily_active_frac, alpha=0.25, color="#d73027",
+                 label="True active fraction (CC > 0.5)")
+ax2.set_ylabel("Fraction of land pixels with true CC > 0.5", color="#d73027")
+ax2.tick_params(axis="y", labelcolor="#d73027")
+ 
+step = max(1, len(t_axis) // 10)
+ax1.set_xticks(t_axis[::step])
+ax1.set_xticklabels([str(traj_dates[t].date()) for t in t_axis[::step]],
+                    rotation=45, ha="right", fontsize=7)
+ 
+l1, lb1 = ax1.get_legend_handles_labels()
+l2, lb2 = ax2.get_legend_handles_labels()
+ax1.legend(l1+l2, lb1+lb2, loc="upper left", fontsize=8)
+ax1.set_title(
+    f"Daily discrimination check — {rtitle}\n"
+    f"Does the model track day-to-day CC evolution, or just a fixed pattern?",
+    fontsize=10
+)
+plt.tight_layout()
+path = os.path.join(OUT_DIR, "fig_daily_discrimination.png")
+plt.savefig(path, dpi=150, bbox_inches="tight")
+plt.close()
+print(f"Saved: {path}")
+
+
+# ============================================================
+# FIGURE 8 — N-DAY TRUE vs PREDICTED CC COMPARISON
+# ============================================================
+# Layout: N_COMPARISON_DAYS rows, each row = one day.
+#   Left panel  → True CC
+#   Right panel → Predicted CC
+# Shared colorbar, shared colour scale across all days.
+# Start date controlled by COMPARISON_START_DATE in CONFIG.
+# Set to None to auto-pick the peak active-fraction day.
+
+# ── Resolve start index ──────────────────────────────────────────────────────
+if COMPARISON_START_DATE is not None:
+    req_date = pd.Timestamp(COMPARISON_START_DATE)
+    diffs    = np.abs((traj_dates - req_date).total_seconds())
+    start_t  = int(np.argmin(diffs))
+    actual_start = traj_dates[start_t].date()
+    if str(actual_start) != COMPARISON_START_DATE:
+        print(f"\n[Fig 8] Requested {COMPARISON_START_DATE} not in test period — "
+              f"snapping to nearest: {actual_start}")
+else:
+    start_t      = int(np.argmax(act_frac))
+    actual_start = traj_dates[start_t].date()
+    print(f"\n[Fig 8] Auto start date (peak active fraction): {actual_start}")
+
+# Clamp window to available data
+end_t    = min(start_t + N_COMPARISON_DAYS, T_map)
+day_idxs = list(range(start_t, end_t))
+n_days   = len(day_idxs)
+
+if n_days == 0:
+    print("[Fig 8] WARNING: no days in window — skipping figure.")
+else:
+    print(f"[Fig 8] Plotting {n_days} days: {actual_start} → "
+          f"{traj_dates[day_idxs[-1]].date()}")
+
+    # ── Shared colour scale ───────────────────────────────────────────────────
+    combined = np.concatenate([
+        pred_cc[day_idxs][:, land_mask].ravel(),
+        true_cc[day_idxs][:, land_mask].ravel(),
+    ])
+    combined = combined[~np.isnan(combined)]
+    vmin_f8  = 0.0
+    vmax_f8  = float(np.nanpercentile(combined, 98))
+    cmap_f8  = "viridis"
+
+    # ── Layout: n_days rows × 2 cols ─────────────────────────────────────────
+    map_w  = 5.0    # width of each map panel (inches)
+    map_h  = 2.6    # height of each map panel (inches)
+    fig_w  = map_w * 2 + 1.8   # +1.8 for colorbar + margins
+    fig_h  = map_h * n_days + 0.5  # tight: just enough for suptitle
+
+    fig, axes = plt.subplots(
+        n_days, 2,
+        figsize=(fig_w, fig_h),
+        gridspec_kw={"hspace": 0.10, "wspace": 0.04},
+    )
+    if n_days == 1:
+        axes = axes.reshape(1, 2)
+
+    # Column headers on the very first row
+    axes[0, 0].set_title("True CC",      fontsize=10, fontweight="bold", pad=4)
+    axes[0, 1].set_title("Predicted CC", fontsize=10, fontweight="bold", pad=4)
+
+    for row, t in enumerate(day_idxs):
+        date_str = str(traj_dates[t].date())
+        true_day = np.where(land_mask, true_cc[t], np.nan)
+        pred_day = np.where(land_mask, pred_cc[t], np.nan)
+
+        for col, data in enumerate([true_day, pred_day]):
+            ax = axes[row, col]
+            ax.pcolormesh(
+                LON2D, LAT2D, data,
+                cmap=cmap_f8, vmin=vmin_f8, vmax=vmax_f8,
+                shading="nearest", zorder=1,
+            )
+            nuts.boundary.plot(ax=ax, linewidth=0.3,
+                               color="black", alpha=0.55, zorder=4)
+            setup_geo_ax(ax)
+
+            # Date label on the left edge of each row
+            if col == 0:
+                ax.set_ylabel(date_str, fontsize=8, labelpad=4)
+
+            # Axis ticks only on bottom row
+            if row == n_days - 1:
+                ax.set_xticks(np.linspace(LON_MIN_REAL, LON_MAX_REAL, 4))
+                ax.set_xticklabels(
+                    [f"{v:.0f}°E" if v >= 0 else f"{abs(v):.0f}°W"
+                     for v in np.linspace(LON_MIN_REAL, LON_MAX_REAL, 4)],
+                    fontsize=6)
+            else:
+                ax.set_xticks([])
+
+            ax.set_yticks([])
+
+    # ── Shared colorbar ───────────────────────────────────────────────────────
+    fig.subplots_adjust(top=0.96, right=0.88)
+    cbar_ax = fig.add_axes([0.90, 0.04, 0.018, 0.90])
+    sm = plt.cm.ScalarMappable(
+        cmap=cmap_f8,
+        norm=mcolors.Normalize(vmin=vmin_f8, vmax=vmax_f8))
+    sm.set_array([])
+    fig.colorbar(sm, cax=cbar_ax, label="CC value")
+
+    fig.suptitle(
+        f"True vs Predicted CC — {rtitle}  |  "
+        f"{actual_start} → {traj_dates[day_idxs[-1]].date()}",
+        fontsize=11, y=0.99,
+    )
+
+    path = os.path.join(OUT_DIR, "fig8_true_vs_pred_cc.png")
+    plt.savefig(path, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"Saved: {path}")
+
+# ============================================================
 # SAVE SUMMARY
 # ============================================================
 
@@ -674,12 +1191,24 @@ with open(os.path.join(OUT_DIR, "trajectory_summary.txt"), "w") as f:
         sd = np.std(jaccard_trans[lead])  if jaccard_trans[lead] else 0.0
         f.write(f"  lead={lead}d  mean={mu:.4f}  std={sd:.4f}  "
                 f"n={len(jaccard_trans[lead])}\n")
-    f.write("\nLCC centroid positions:\n")
-    f.write(f"  {'Date':<12} {'LCC_size':>10} {'N_comp':>8} {'Lat':>8} {'Lon':>8}\n")
-    for t in range(len(test_dates)):
-        f.write(f"  {str(test_dates[t].date()):<12} "
+    f.write("\nLCC centroid positions (predicted vs observed):\n")
+    f.write(f"  {'Date':<12} {'LCC_size':>10} {'N_comp':>8} "
+            f"{'Pred_Lat':>10} {'Pred_Lon':>10} "
+            f"{'Obs_Lat':>9} {'Obs_Lon':>9} {'Dist_deg':>10}\n")
+    for t in range(T_map):
+        plat = centroid_lat[t]
+        plon = centroid_lon[t]
+        olat = obs_centroid_lat[t]
+        olon = obs_centroid_lon[t]
+        if not np.isnan(plat) and not np.isnan(olat):
+            dist = float(np.sqrt((plat - olat)**2 + (plon - olon)**2))
+        else:
+            dist = np.nan
+        f.write(f"  {str(traj_dates[t].date()):<12} "
                 f"{lcc_size[t]:>10.0f} {n_components[t]:>8.0f} "
-                f"{centroid_lat[t]:>8.2f} {centroid_lon[t]:>8.2f}\n")
+                f"{plat:>10.2f} {plon:>10.2f} "
+                f"{olat:>9.2f} {olon:>9.2f} "
+                f"{dist:>10.3f}\n")
 
 print(f"\nAll outputs saved to: {OUT_DIR}")
 print("Done.")

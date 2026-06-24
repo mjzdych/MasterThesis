@@ -14,4 +14,4 @@ source ~/venvs/thesis/bin/activate
 
 cd /gpfs/home2/mzdych/thesis
 
-python trajectory_analysis_cc.py
+python inference_only.py

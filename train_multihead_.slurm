@@ -14,4 +14,4 @@ source ~/venvs/thesis/bin/activate
 
 cd /gpfs/home2/mzdych/thesis
 
-python results_summary.py
+python run_batch_experiments_3d.py

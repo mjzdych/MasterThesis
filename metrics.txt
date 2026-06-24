@@ -1,0 +1,31 @@
+Task           : CC  (regression)
+Forecast horizon: t+3 days
+Ablation       : cn_era5
+Features       : ['BC', 'DC', 'ID', 'OD', 'is_heatwave', 'swvl1', 'land_mask', 'u', 'v', 'z']
+Target         : CC_target_next_day
+Context region : lat=[36,44]  lon=[-10,5]
+Target region  : lat=[36,44]  lon=[-10,5]
+Train  : 1990-06-01 → 2002-08-31
+Val    : 2003-06-01 → 2003-07-14
+Test   : 2003-07-15 → 2003-08-31
+Best epoch     : 2  (ES patience=7, min epochs=40)
+HIDDEN_DIM=64  DROPOUT=0.0  WEIGHT_DECAY=0.0001
+Target transform : standard
+y_mean=0.084289  y_std=0.272259
+
+=== VAL ===
+  mae_norm: 0.6768648028373718
+  r2_norm: 0.08697181940078735
+  mae: 0.18320760130882263
+  rmse: 0.35396507382392883
+  r2: 0.08708387613296509
+  pearson: 0.405185049590968
+
+=== TEST ===
+  mae_norm: 0.7661647200584412
+  r2_norm: 0.22064077854156494
+  mae: 0.20739343762397766
+  rmse: 0.3721080720424652
+  r2: 0.22098129987716675
+  pearson: 0.5790145748198673
+

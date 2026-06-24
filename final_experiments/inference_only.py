@@ -13,41 +13,23 @@ from torch.utils.data import Dataset, DataLoader
 
 DATA_FILE  = "/gpfs/home2/mzdych/thesis/full_processed_training_dataset.nc"
 BASE_OUT   = "/gpfs/home2/mzdych/thesis/experiments"
+# DATA_FILE  = "full_processed_training_dataset.nc"
+# BASE_OUT   = "experiments"
+
 DEVICE     = "cuda" if torch.cuda.is_available() else "cpu"
 SEQ_LEN    = 14
 BATCH_SIZE = 4
 
 RUNS = [
-    "south_europe_2003_dc_cn_only",
-    "south_europe_2003_dc_cn_era5",
-    "south_europe_2003_dc_era5_only",
-    "north_europe_2010_dc_cn_only",
-    "north_europe_2010_dc_cn_era5",
-    "north_europe_2010_dc_era5_only",
-    "north_europe_2018_dc_cn_only",
-    "north_europe_2018_dc_cn_era5",
-    "north_europe_2018_dc_era5_only",
-    "full_europe_2003_dc_cn_only",
-    "full_europe_2003_dc_cn_era5",
-    "full_europe_2003_dc_era5_only",
-    "full_europe_2010_dc_cn_only",
-    "full_europe_2010_dc_cn_era5",
-    "full_europe_2010_dc_era5_only",
-    "full_europe_2018_dc_cn_only",
-    "full_europe_2018_dc_cn_era5",
-    "full_europe_2018_dc_era5_only",
-    "eastern_europe_2010_dc_cn_only",
-    "eastern_europe_2010_dc_cn_era5",
-    "eastern_europe_2010_dc_era5_only",
-    "iberia_2003_dc_cn_only",
-    "iberia_2003_dc_cn_era5",
-    "iberia_2003_dc_era5_only",
-    "mediterranean_2003_dc_cn_only",
-    "mediterranean_2003_dc_cn_era5",
-    "mediterranean_2003_dc_era5_only",
-    "scandinavia_2018_dc_cn_only",
-    "scandinavia_2018_dc_cn_era5",
-    "scandinavia_2018_dc_era5_only"
+    
+    "iberia_2003_cc_cn_era5"
+    # "iberia_2003_dc_era5_only",
+    # "mediterranean_2003_dc_cn_only",
+    # "mediterranean_2003_dc_cn_era5",
+    # "mediterranean_2003_dc_era5_only",
+    # "scandinavia_2018_dc_cn_only",
+    # "scandinavia_2018_dc_cn_era5",
+    # "scandinavia_2018_dc_era5_only"
     
 
 ]
@@ -380,6 +362,16 @@ for run_name in RUNS:
     model.eval()
     print(f"  Model loaded — {sum(p.numel() for p in model.parameters()):,} params")
 
+    # ── Inverse transform helper (mirrors Transformer script) ─
+    def inverse_transform(arr, transform, mean, std):
+        if transform == "standard":
+            return arr * std + mean
+        elif transform == "log1p":
+            return np.expm1(np.clip(arr * std + mean, -10, 20))
+        return arr
+
+    tgt_transform = TARGET_TRANSFORM.get(TARGET, "standard")
+
     # ── Inference + save ──────────────────────────────────────
     def run_inference(loader, split_name, tms_split):
         all_pred, all_true = [], []
@@ -392,9 +384,19 @@ for run_name in RUNS:
                 all_pred.append(out.cpu().numpy())
                 all_true.append(y.numpy())
 
-        pred_arr = np.concatenate(all_pred)   # (N, 1, H, W)
-        true_arr = np.concatenate(all_true)   # (N, 1, H, W)
-        time_arr = np.array([tms_split[t] for _, t in loader.dataset.indices])
+        pred_norm = np.concatenate(all_pred)   # (N, 1, H, W) — normalized
+        true_norm = np.concatenate(all_true)   # (N, 1, H, W) — normalized
+        time_arr  = np.array([tms_split[t] for _, t in loader.dataset.indices])
+
+        if TASK_TYPE == "regression":
+            pred_arr = inverse_transform(pred_norm, tgt_transform, y_mean, y_std)
+            true_arr = inverse_transform(true_norm, tgt_transform, y_mean, y_std)
+            if TARGET in NON_NEGATIVE_TARGETS:
+                pred_arr = np.clip(pred_arr, 0, None)
+                true_arr = np.clip(true_arr, 0, None)
+        else:
+            pred_arr = pred_norm
+            true_arr = true_norm
 
         np.save(os.path.join(run_dir, f"pred_{split_name}.npy"), pred_arr)
         np.save(os.path.join(run_dir, f"true_{split_name}.npy"), true_arr)

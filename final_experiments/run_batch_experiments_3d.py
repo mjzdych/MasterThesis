@@ -24,7 +24,7 @@ from sklearn.metrics import (
 # ============================================================
 
 DATA_FILE = "/gpfs/home2/mzdych/thesis/full_processed_training_dataset.nc"
-BASE_OUT  = "/gpfs/home2/mzdych/thesis/experiments"
+BASE_OUT  = "/gpfs/home2/mzdych/thesis/experiments_3d"
 os.makedirs(BASE_OUT, exist_ok=True)
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -39,6 +39,11 @@ N_EPOCHS      = 100
 LR            = 5e-4
 ES_PATIENCE   = 7
 ES_MIN_EPOCHS = 40
+
+# ── Forecast horizon ─────────────────────────────────────────────────────────
+# How many days ahead to predict.  Change this to 3 or 7 for t+3 / t+7 runs.
+# Affects: target shift, dataset index offset, output directory name, metrics.
+FORECAST_HORIZON = 3   # {1, 3, 7}
 
 # ============================================================
 # BEST HYPERPARAMS PER TASK  (from grid search)
@@ -100,12 +105,12 @@ REGIONS = [
     # "full_europe_2010", # done
     # "full_europe_2018", # done
     # "north_europe_2010", # done
-    "north_europe_2018" # done
+    # "north_europe_2018" # done
     # "south_europe_2003" # done
-    # "eastern_europe_2010", # done
-    # "iberia_2003", # done
-    # "scandinavia_2018", # done
-    # "mediterranean_2003" # done
+    "eastern_europe_2010", # done
+    "iberia_2003", # done
+    "scandinavia_2018", # done
+    "mediterranean_2003" # done
 
 ]
 # 23211028 - ee, iberia, mediterranean, scandi
@@ -113,7 +118,7 @@ REGIONS = [
 # 23211503 - north 2010 and 2018
 # 23211549 - europe 2018
 
-TASKS = ["DC"]
+TASKS = ["DC", "BC"]
 
 # Build experiments programmatically
 EXPERIMENTS = []
@@ -122,28 +127,12 @@ for region in REGIONS:
     for task in TASKS:
         full_feats, cn_feats, era5_feats = get_feature_sets(task)
 
-        # ── Full (CN + ERA5) ─────────────────────────────────
+        # ── Full (CN + ERA5) only ─────────────────────────────
         EXPERIMENTS.append({
             "TASK":             task,
             "REGION":           region,
             "COEFFS_OVERRIDE":  full_feats,
             "RUN_SUFFIX":       "cn_era5",
-        })
-
-        # ── CN-only ──────────────────────────────────────────
-        EXPERIMENTS.append({
-            "TASK":             task,
-            "REGION":           region,
-            "COEFFS_OVERRIDE":  cn_feats,
-            "RUN_SUFFIX":       "cn_only",
-        })
-
-        # ── ERA5-only ─────────────────────────────────────────
-        EXPERIMENTS.append({
-            "TASK":             task,
-            "REGION":           region,
-            "COEFFS_OVERRIDE":  era5_feats,
-            "RUN_SUFFIX":       "era5_only",
         })
 
 # ============================================================
@@ -325,6 +314,8 @@ class SeqDataset(Dataset):
         self.indices = []
         for yr in np.unique(times.year):
             yr_idx = np.where(times.year == yr)[0]
+            # y_vals is already rolled by -horizon via np.roll in run_experiment,
+            # so we only need the standard seq_len offset here.
             for i in range(len(yr_idx) - seq_len):
                 self.indices.append((yr_idx[i], yr_idx[i + seq_len]))
 
@@ -421,7 +412,9 @@ def run_experiment(exp, clean_ds, times):
     TASK      = exp["TASK"]
     REGION    = exp["REGION"]
     suffix    = exp.get("RUN_SUFFIX", "")
-    run_name  = f"{REGION}_{TASK.lower()}" + (f"_{suffix}" if suffix else "")
+    horizon   = exp.get("FORECAST_HORIZON", FORECAST_HORIZON)
+    horizon_tag = f"t{horizon}"   # e.g. "t1", "t3", "t7"
+    run_name  = f"{REGION}_{TASK.lower()}_{horizon_tag}" + (f"_{suffix}" if suffix else "")
     OUT_DIR   = os.path.join(BASE_OUT, run_name)
     os.makedirs(OUT_DIR, exist_ok=True)
 
@@ -467,16 +460,19 @@ def run_experiment(exp, clean_ds, times):
         if TARGET == "ND_target_next_day":
             od_raw = ds["OD"].transpose("time", "lat", "lon").values.astype(np.float32)
             id_raw = ds["ID"].transpose("time", "lat", "lon").values.astype(np.float32)
-            y_vals = np.roll(od_raw - id_raw, shift=-1, axis=0); y_vals[-1] = 0.0
+            y_vals = np.roll(od_raw - id_raw, shift=-horizon, axis=0); y_vals[-horizon:] = 0.0
         elif TARGET in ds:
-            y_vals = ds[TARGET].transpose("time", "lat", "lon").values.astype(np.float32)
+            # Pre-built next-day target in dataset — but we need to re-shift for other horizons
+            raw_var  = TARGET.replace("_target_next_day", "")
+            raw_vals = ds[raw_var].transpose("time", "lat", "lon").values.astype(np.float32)
+            y_vals   = np.roll(raw_vals, shift=-horizon, axis=0); y_vals[-horizon:] = 0.0
         else:
             raw_var  = TARGET.replace("_target_next_day", "")
             raw_vals = ds[raw_var].transpose("time", "lat", "lon").values.astype(np.float32)
-            y_vals   = np.roll(raw_vals, shift=-1, axis=0); y_vals[-1] = 0.0
+            y_vals   = np.roll(raw_vals, shift=-horizon, axis=0); y_vals[-horizon:] = 0.0
     elif TASK_TYPE == "binary_spatial":
         y_raw  = ds[TARGET].values.astype(np.float32)
-        y_vals = np.roll(y_raw, shift=-1, axis=0); y_vals[-1] = 0.0
+        y_vals = np.roll(y_raw, shift=-horizon, axis=0); y_vals[-horizon:] = 0.0
     elif TASK_TYPE == "binary_scalar":
         y_vals = clean_ds[TARGET].values.astype(np.int8)
 
@@ -728,12 +724,6 @@ def run_experiment(exp, clean_ds, times):
                               (np.sum((true_norm - true_norm.mean())**2) + 1e-8))
             pred_arr  = inverse_transform_target(pred_norm)
             true_arr  = inverse_transform_target(true_norm)
-            # pick the right times array based on split_name
-            tms_split = tms_val if split_name == "VAL" else tms_te
-            time_arr  = np.array([tms_split[t] for _, t in loader.dataset.indices])
-            np.save(os.path.join(OUT_DIR, f"pred_{split_name}.npy"), pred_arr)
-            np.save(os.path.join(OUT_DIR, f"true_{split_name}.npy"), true_arr)
-            np.save(os.path.join(OUT_DIR, f"times_{split_name}.npy"), time_arr)
             mae       = float(np.mean(np.abs(pred_arr - true_arr)))
             rmse      = float(np.sqrt(np.mean((pred_arr - true_arr)**2)))
             r2        = float(1 - np.sum((true_arr - pred_arr)**2) /
@@ -799,6 +789,7 @@ def run_experiment(exp, clean_ds, times):
     # ── Save metrics.txt ──────────────────────────────────────────────────
     with open(os.path.join(OUT_DIR, "metrics.txt"), "w") as f:
         f.write(f"Task           : {TASK}  ({TASK_TYPE})\n")
+        f.write(f"Forecast horizon: t+{horizon} days\n")
         f.write(f"Ablation       : {suffix}\n")
         f.write(f"Features       : {COEFFS}\n")
         f.write(f"Target         : {TARGET}\n")
@@ -822,6 +813,7 @@ def run_experiment(exp, clean_ds, times):
     torch.save({
         "model_state_dict":   model.state_dict(),
         "task":               TASK,
+        "forecast_horizon":   horizon,
         "task_type":          TASK_TYPE,
         "region":             REGION,
         "ablation":           suffix,
@@ -861,7 +853,8 @@ print(f"Output base      : {BASE_OUT}\n")
 # Print experiment plan
 print("Experiment plan:")
 for i, exp in enumerate(EXPERIMENTS):
-    label = f"{exp['REGION']}_{exp['TASK'].lower()}_{exp.get('RUN_SUFFIX','')}"
+    h     = exp.get("FORECAST_HORIZON", FORECAST_HORIZON)
+    label = f"{exp['REGION']}_{exp['TASK'].lower()}_t{h}_{exp.get('RUN_SUFFIX','')}"
     feats = exp.get("COEFFS_OVERRIDE", TASK_DEFAULTS[exp["TASK"]]["coeffs"])
     print(f"  [{i+1:02d}] {label:55s}  features={feats}")
 print()
@@ -874,7 +867,8 @@ print(f"Dataset loaded   : {dict(clean_ds.dims)}\n")
 summary = []
 
 for i, exp in enumerate(EXPERIMENTS):
-    label = f"{exp['REGION']}_{exp['TASK'].lower()}_{exp.get('RUN_SUFFIX','')}"
+    h     = exp.get("FORECAST_HORIZON", FORECAST_HORIZON)
+    label = f"{exp['REGION']}_{exp['TASK'].lower()}_t{h}_{exp.get('RUN_SUFFIX','')}"
     print(f"[{i+1}/{len(EXPERIMENTS)}]  {label}")
 
     try:
@@ -902,5 +896,3 @@ for s in summary:
               f"F1={m['best_f1']:.3f}")
     else:
         print(f"  {s['run']:60s}  {s['status']}")
-
-
