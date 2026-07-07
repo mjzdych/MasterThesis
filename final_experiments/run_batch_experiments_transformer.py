@@ -642,7 +642,7 @@ def run_experiment(exp, clean_ds, times):
 
     # ── Loss ──────────────────────────────────────────────────────────────
     if TASK_TYPE == "regression":
-        criterion = nn.MSELoss()
+        criterion = nn.HuberLoss()
     elif TASK_TYPE == "binary_spatial":
         criterion = FocalLoss(alpha=0.75, gamma=2.0)
 

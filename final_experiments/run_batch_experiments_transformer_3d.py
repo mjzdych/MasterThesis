@@ -102,10 +102,11 @@ ERA5_FEATURES = ["swvl1", "land_mask", "u", "v", "z"]
 
 TASK_CN_FEATURES = {
     "CC":  ["BC", "DC", "ID", "OD"],
-    "BC":  ["CC", "DC", "ID", "OD"],
-    "DC":  ["BC", "CC", "ID", "OD"],
     "HW":  ["BC", "DC", "ID", "OD", "CC"],
 }
+
+#   "BC":  ["CC", "DC", "ID", "OD"],
+#     "DC":  ["BC", "CC", "ID", "OD"],
 
 def get_feature_sets(task):
     cn   = TASK_CN_FEATURES[task]

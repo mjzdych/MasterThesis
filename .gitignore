@@ -8,5 +8,5 @@ heatwave_daily_true_vs_pred.gif
 /experiments*
 full_processed_training_dataset.nc
 /final_experiments/cn_analysis_outputs/*.csv
-/final_experiments/*.csv
 /final_experiments/cn_analysis_outputs/*.png
+/final_experiments/cn_analysis_outputs/peak_frames

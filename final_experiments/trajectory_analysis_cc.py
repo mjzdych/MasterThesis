@@ -38,11 +38,11 @@ from scipy.ndimage import label as nd_label
 
 # Local
 DATA_FILE = "full_processed_training_dataset.nc"
-BASE_OUT  = "experiments_transformer"
+BASE_OUT  = "experiments"
 NUTS_FILE = "NUTS_RG_01M_2024_4326_LEVL_2.geojson"
 SEQ_LEN = 14
 
-REGION   = "iberia_2003"
+REGION   = "scandinavia_2018"
 ABLATION = "cn_era5"
 
 CC_HIGH_Q          = 0.70
@@ -68,10 +68,10 @@ REGION_BOUNDS = {
     "mediterranean_2003":  {"lat_min": 30, "lat_max": 48, "lon_min": -10, "lon_max": 40},
 }
 
-CC_DIR  = os.path.join(BASE_OUT, f"{REGION}_cc_{ABLATION}_transformer") # _transformer
-HW_DIR  = os.path.join(BASE_OUT, f"{REGION}_hw_{ABLATION}_transformer")
-# CC_DIR  = os.path.join(BASE_OUT, f"{REGION}_cc_{ABLATION}") # _transformer
-# HW_DIR  = os.path.join(BASE_OUT, f"{REGION}_hw_{ABLATION}")
+# CC_DIR  = os.path.join(BASE_OUT, f"{REGION}_cc_{ABLATION}_transformer") # _transformer
+# HW_DIR  = os.path.join(BASE_OUT, f"{REGION}_hw_{ABLATION}_transformer")
+CC_DIR  = os.path.join(BASE_OUT, f"{REGION}_cc_{ABLATION}") # _transformer
+HW_DIR  = os.path.join(BASE_OUT, f"{REGION}_hw_{ABLATION}")
 OUT_DIR = os.path.join(BASE_OUT, f"trajectories_{REGION}_{ABLATION}_cconly")
 os.makedirs(OUT_DIR, exist_ok=True)
 
@@ -274,7 +274,7 @@ cc_test_land = cc_test_land[~np.isnan(cc_test_land)]
 print(f"  TEST land-pixel-days: {len(cc_test_land):,}")
 
 # Combined distribution for threshold calculation
-cc_all_land = np.concatenate([cc_val_land, cc_test_land]) if use_val else cc_test_land
+cc_all_land = np.concatenate([cc_val_land]) if use_val else cc_test_land
 
 cc_thresh_high = np.quantile(cc_all_land, CC_HIGH_Q)
 cc_thresh_low  = np.quantile(cc_all_land, CC_LOW_Q)
